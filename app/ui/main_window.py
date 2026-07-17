@@ -24,6 +24,7 @@ from app.database.engine import Database
 from app.database.repository import DrawRepository, GameRepository
 from app.ui.backtesting_page import BacktestingPage
 from app.ui.browser_widget import HistoricalBrowserWidget
+from app.ui.prediction_page import PredictionPage
 from app.ui.statistics_page import StatisticsPage
 
 
@@ -49,7 +50,7 @@ class MainWindow(QMainWindow):
         ("Dashboard", True),
         ("Historical Draws", True),
         ("Statistics", True),
-        ("Prediction Lab", False),  # future milestone
+        ("Prediction Lab", True),
         ("Backtesting", True),
         ("Settings", True),
         ("About", True),
@@ -92,6 +93,8 @@ class MainWindow(QMainWindow):
             return self._build_historical_draws()
         if name == "Statistics":
             return StatisticsPage(self._database)
+        if name == "Prediction Lab":
+            return PredictionPage(self._database)
         if name == "Backtesting":
             return BacktestingPage(self._database)
         if name == "About":

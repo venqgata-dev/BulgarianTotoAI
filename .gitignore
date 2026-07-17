@@ -10,6 +10,7 @@ dist/
 logs/*.log
 data/*.db
 data/*.sqlite3
+data/predictor_calibration.json
 config/user_config.json
 output/
 .idea/

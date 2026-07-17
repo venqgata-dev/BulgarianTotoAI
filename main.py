@@ -15,6 +15,7 @@ Usage:
     python main.py backtest --game 6x49 --strategy random --seed 42
     python main.py backtest --game 6x49 [--from-date Y-M-D] [--to-date Y-M-D] [--last-n N]
     python main.py backtest --game 6x49 [--json PATH] [--csv PATH]
+    python main.py predict --game 6x49 [--seed N] [--random]
     python main.py check            Headless self-check (used by CI/tests)
 """
 
@@ -283,6 +284,20 @@ def _run_backtest(
     return 0
 
 
+def _run_predict(database: Database, game: str, seed: int | None, use_random: bool) -> int:
+    from app.analysis.predictor import DEFAULT_SEED, PredictorService
+
+    if use_random:
+        effective_seed = None
+    elif seed is not None:
+        effective_seed = seed
+    else:
+        effective_seed = DEFAULT_SEED
+    result = PredictorService(database).predict(game, seed=effective_seed)
+    print(result.to_text())
+    return 0
+
+
 def _run_check(config: AppConfig, database: Database) -> int:
     """Headless health check: config, logging, schema and seeds all worked."""
     with database.session() as session:
@@ -330,6 +345,10 @@ def main(argv: list[str] | None = None) -> int:
     backtest.add_argument("--seed", type=int, metavar="N")
     backtest.add_argument("--json", dest="json_path", metavar="PATH")
     backtest.add_argument("--csv", dest="csv_path", metavar="PATH")
+    predict = sub.add_parser("predict")
+    predict.add_argument("--game", choices=GAME_CODES, required=True)
+    predict.add_argument("--seed", type=int, metavar="N")
+    predict.add_argument("--random", action="store_true", help="use a non-deterministic seed")
     args = parser.parse_args(argv)
 
     config, database = bootstrap()
@@ -368,6 +387,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.json_path,
                 args.csv_path,
             )
+        if args.command == "predict":
+            return _run_predict(database, args.game, args.seed, args.random)
         parser.error(f"unknown command {args.command!r}")
         return 2
     finally:
