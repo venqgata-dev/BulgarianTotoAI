@@ -1,0 +1,20 @@
+# Bulgarian Toto AI - Python 3.12+
+# Core
+PySide6>=6.7
+SQLAlchemy>=2.0.30
+alembic>=1.13
+pandas>=2.2
+numpy>=1.26
+
+# Scraping
+requests>=2.32
+beautifulsoup4>=4.12
+lxml>=5.2
+websocket-client>=1.8  # Chrome DevTools fallback fetcher (bot-protected site)
+
+# Visualisation (future milestones; part of approved stack)
+matplotlib>=3.9
+pyqtgraph>=0.13
+
+# Testing
+pytest>=8.2
