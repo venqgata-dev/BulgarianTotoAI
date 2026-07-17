@@ -77,6 +77,35 @@ def test_duplicate_draw_rejected_by_constraint(database: Database) -> None:
             DrawRepository(session).add_parsed(game, make_parsed(), source="wayback")
 
 
+def test_two_drawings_of_same_session_allowed(database: Database) -> None:
+    with database.session() as session:
+        repo = DrawRepository(session)
+        game = GameRepository(session).by_code("6x49")
+        repo.add_parsed(game, make_parsed(drawing=1), source="wayback")
+        repo.add_parsed(
+            game, make_parsed(drawing=2, numbers=(1, 2, 3, 4, 6, 7)), source="wayback"
+        )
+    with database.session() as session:
+        game = GameRepository(session).by_code("6x49")
+        repo = DrawRepository(session)
+        assert repo.count(game.id) == 2
+        first = repo.get(game.id, 2026, 55, drawing=1)
+        second = repo.get(game.id, 2026, 55, drawing=2)
+        assert first is not None and second is not None
+        assert [n.value for n in first.numbers] == [5, 10, 17, 20, 42, 47]
+        assert [n.value for n in second.numbers] == [1, 2, 3, 4, 6, 7]
+
+
+def test_duplicate_drawing_rejected_by_constraint(database: Database) -> None:
+    with database.session() as session:
+        game = GameRepository(session).by_code("6x49")
+        DrawRepository(session).add_parsed(game, make_parsed(drawing=2), source="live")
+    with pytest.raises(IntegrityError):
+        with database.session() as session:
+            game = GameRepository(session).by_code("6x49")
+            DrawRepository(session).add_parsed(game, make_parsed(drawing=2), source="wayback")
+
+
 def test_same_draw_number_allowed_across_years_and_games(database: Database) -> None:
     with database.session() as session:
         repo = DrawRepository(session)
@@ -96,3 +125,5 @@ def test_content_hash_stable_and_sensitive(database: Database) -> None:
     assert content_hash(make_parsed()) == content_hash(make_parsed())
     changed = make_parsed(numbers=(1, 2, 3, 4, 5, 6))
     assert content_hash(changed) != content_hash(make_parsed())
+    other_drawing = make_parsed(drawing=2)
+    assert content_hash(other_drawing) != content_hash(make_parsed())

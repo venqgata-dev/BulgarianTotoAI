@@ -14,6 +14,19 @@ Internet Archive snapshot from May 2024 (identical structure, currency label
 
 The sidebar repeats ball numbers for every game, so parsing is strictly
 scoped to ``div.tir_result``.
+
+Two drawings per session
+-------------------------
+Both captured pages also show the "Тото 2 - 5 от 35" game (in its sidebar
+widget, identically structured in the 2024 and 2026 captures) publishing
+**two** independent groups of winning numbers for the same draw session,
+each preceded by a ``span.win-numbers`` label reading "1 Теглене" / "2
+Теглене" ("I-во"/"II-ро теглене" colloquially). A single-drawing page (e.g.
+6/49) instead labels its numbers with a plain "Печеливши числа" text node,
+never a ``span.win-numbers``. ``TotoParser.parse_draw_page`` therefore
+returns **one :class:`ParsedDraw` per drawing found**, keyed by that label;
+pages without a drawing label yield a single-element list with
+``drawing=1``.
 """
 
 from __future__ import annotations
@@ -29,6 +42,7 @@ from app.models.domain import ParsedDraw, ParsedPrizeTier
 _TITLE_RE = re.compile(r"Тираж\s+(?P<number>\d+)\s*-\s*(?P<date>\d{2}\.\d{2}\.\d{4})")
 _DRAW_URL_RE = re.compile(r"/results/(?P<code>[0-9a-z]+)/(?P<year>\d{4})-(?P<number>\d+)/?$")
 _MATCH_COUNT_RE = re.compile(r"(\d+)")
+_DRAWING_LABEL_RE = re.compile(r"(?P<drawing>\d+)\s*Теглене", re.IGNORECASE)
 
 _CURRENCY_MAP = (
     (("лев", "лв"), "BGN"),
@@ -77,8 +91,10 @@ def _amount_and_currency(tag: Tag) -> tuple[Decimal | None, str | None]:
 class TotoParser:
     """Parses result pages and draw archive links for one or more games."""
 
-    def parse_draw_page(self, html: str, game_code: str, source_url: str = "") -> ParsedDraw:
-        """Parse a draw detail (or results list) page into a :class:`ParsedDraw`.
+    def parse_draw_page(self, html: str, game_code: str, source_url: str = "") -> list[ParsedDraw]:
+        """Parse a draw detail (or results list) page into one or more
+        :class:`ParsedDraw` (one per drawing found on the page - see the
+        module docstring).
 
         Raises :class:`ParseError` when the result block is missing or
         essential fields cannot be extracted.
@@ -100,44 +116,57 @@ class TotoParser:
         except ValueError as exc:
             raise ParseError(f"Invalid draw date in title {title_tag.get_text()!r}") from exc
 
-        numbers, bonus = self._parse_numbers(root, source_url)
+        drawings = self._parse_numbers(root, source_url)
         jackpot, jackpot_currency = self._parse_jackpot(root)
         tiers = self._parse_prize_tiers(root)
         currency = jackpot_currency or next((t.currency for t in tiers if t.currency), None)
 
-        return ParsedDraw(
-            game_code=game_code,
-            draw_number=draw_number,
-            draw_year=draw_date.year,
-            draw_date=draw_date,
-            numbers=numbers,
-            bonus_numbers=bonus,
-            jackpot_amount=jackpot,
-            currency=currency,
-            prize_tiers=tiers,
-            source_url=source_url,
-        )
+        return [
+            ParsedDraw(
+                game_code=game_code,
+                draw_number=draw_number,
+                draw_year=draw_date.year,
+                draw_date=draw_date,
+                drawing=drawing_number,
+                numbers=main,
+                bonus_numbers=bonus,
+                jackpot_amount=jackpot,
+                currency=currency,
+                prize_tiers=tiers,
+                source_url=source_url,
+            )
+            for drawing_number, (main, bonus) in sorted(drawings.items())
+        ]
 
     @staticmethod
-    def _parse_numbers(root: Tag, source_url: str) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    def _parse_numbers(root: Tag, source_url: str) -> dict[int, tuple[tuple[int, ...], tuple[int, ...]]]:
         container = root.find("div", class_="tir_numbers")
         if not isinstance(container, Tag):
             raise ParseError(f"No .tir_numbers block (url={source_url or 'n/a'})")
-        main: list[int] = []
-        bonus: list[int] = []
+        drawings: dict[int, tuple[list[int], list[int]]] = {}
+        current_drawing = 1
         for span in container.find_all("span"):
-            classes = span.get("class") or []
-            if not any(str(c).startswith("ball") for c in classes):
+            classes = [str(c) for c in (span.get("class") or [])]
+            if "win-numbers" in classes:
+                label_match = _DRAWING_LABEL_RE.search(span.get_text())
+                if label_match:
+                    current_drawing = int(label_match.group("drawing"))
+                continue
+            if not any(c.startswith("ball") for c in classes):
                 continue
             value = _parse_int(span.get_text())
             if value is None:
                 raise ParseError(f"Non-numeric ball {span.get_text()!r}")
+            main, bonus = drawings.setdefault(current_drawing, ([], []))
             # ball-white = main numbers; any other ball-* colour would be a
             # bonus ball (none of the current games has one).
             (main if "ball-white" in classes else bonus).append(value)
-        if not main:
+        if not drawings:
             raise ParseError(f"No winning numbers found (url={source_url or 'n/a'})")
-        return tuple(main), tuple(bonus)
+        return {
+            drawing_number: (tuple(main), tuple(bonus))
+            for drawing_number, (main, bonus) in drawings.items()
+        }
 
     @staticmethod
     def _parse_jackpot(root: Tag) -> tuple[Decimal | None, str | None]:

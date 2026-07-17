@@ -17,26 +17,29 @@ def parser() -> TotoParser:
 
 class TestLiveListPage:
     def test_latest_draw_parsed(self, parser: TotoParser, live_list_html: str) -> None:
-        draw = parser.parse_draw_page(live_list_html, "6x49", "https://info.toto.bg/results/6x49")
+        draws = parser.parse_draw_page(live_list_html, "6x49", "https://info.toto.bg/results/6x49")
+        assert len(draws) == 1  # 6/49 has never had a second drawing
+        draw = draws[0]
         assert draw.draw_number == 55
         assert draw.draw_year == 2026
         assert draw.draw_date == date(2026, 7, 16)
+        assert draw.drawing == 1
         assert draw.numbers == (5, 10, 17, 20, 42, 47)
         assert draw.bonus_numbers == ()
 
     def test_sidebar_numbers_do_not_leak(self, parser: TotoParser, live_list_html: str) -> None:
         # The sidebar repeats ball numbers for all games; only the six numbers
         # of the main result block must be extracted.
-        draw = parser.parse_draw_page(live_list_html, "6x49")
+        draw = parser.parse_draw_page(live_list_html, "6x49")[0]
         assert len(draw.numbers) == 6
 
     def test_jackpot_in_euro(self, parser: TotoParser, live_list_html: str) -> None:
-        draw = parser.parse_draw_page(live_list_html, "6x49")
+        draw = parser.parse_draw_page(live_list_html, "6x49")[0]
         assert draw.jackpot_amount == Decimal("2724436.24")
         assert draw.currency == "EUR"
 
     def test_prize_tiers(self, parser: TotoParser, live_list_html: str) -> None:
-        draw = parser.parse_draw_page(live_list_html, "6x49")
+        draw = parser.parse_draw_page(live_list_html, "6x49")[0]
         assert [t.match_count for t in draw.prize_tiers] == [6, 5, 4, 3]
         tier5 = draw.prize_tiers[1]
         assert tier5.winners == 19
@@ -56,7 +59,7 @@ class TestWaybackSnapshot:
     def test_draw_parsed_with_bgn_currency(
         self, parser: TotoParser, wayback_draw_html: str
     ) -> None:
-        draw = parser.parse_draw_page(wayback_draw_html, "6x49")
+        draw = parser.parse_draw_page(wayback_draw_html, "6x49")[0]
         assert draw.draw_number == 11
         assert draw.draw_year == 2024
         assert draw.draw_date == date(2024, 2, 8)
@@ -65,12 +68,61 @@ class TestWaybackSnapshot:
         assert draw.currency == "BGN"
 
     def test_prize_tiers_bgn(self, parser: TotoParser, wayback_draw_html: str) -> None:
-        draw = parser.parse_draw_page(wayback_draw_html, "6x49")
+        draw = parser.parse_draw_page(wayback_draw_html, "6x49")[0]
         tier5 = next(t for t in draw.prize_tiers if t.match_count == 5)
         assert tier5.winners == 12
         assert tier5.prize_amount == Decimal("3510.40")
         assert tier5.total_amount == Decimal("42124.80")
         assert tier5.currency == "BGN"
+
+
+class TestTwoDrawingSession:
+    """5/35 pages have historically published two independent drawings.
+
+    Modelled on the real ``span.win-numbers`` "1 Теглене" / "2 Теглене"
+    markup found identically in both the 2024 Wayback and 2026 live
+    fixtures (see tests/fixtures, "Тото 2 - 5 от 35" sidebar block).
+    """
+
+    _TWO_DRAWING_HTML = """
+    <div class="tir_result">
+      <h2 class="tir_title"> Тираж 12 - 03.03.2016 </h2>
+      <div class="tir_numbers">
+        <div class="col-xs-12">
+          <span class="win-numbers">1 Теглене</span>
+        </div>
+        <div class="col-xs-12">
+          <span class="ball-white">2</span>
+          <span class="ball-white">13</span>
+          <span class="ball-white">30</span>
+          <span class="ball-white">31</span>
+          <span class="ball-white">33</span>
+        </div>
+        <div class="col-xs-12">
+          <span class="win-numbers">2 Теглене</span>
+        </div>
+        <div class="col-xs-12">
+          <span class="ball-white">2</span>
+          <span class="ball-white">9</span>
+          <span class="ball-white">24</span>
+          <span class="ball-white">33</span>
+          <span class="ball-white">34</span>
+        </div>
+      </div>
+    </div>
+    """
+
+    def test_two_drawings_extracted(self, parser: TotoParser) -> None:
+        draws = parser.parse_draw_page(self._TWO_DRAWING_HTML, "5x35", "test://two-drawing")
+        assert len(draws) == 2
+        first, second = draws
+        assert first.draw_number == second.draw_number == 12
+        assert first.draw_date == second.draw_date == date(2016, 3, 3)
+        assert (first.drawing, second.drawing) == (1, 2)
+        assert first.numbers == (2, 13, 30, 31, 33)
+        assert second.numbers == (2, 9, 24, 33, 34)
+        assert first.official_ref == "12/2016"
+        assert second.official_ref == "12/2016#2"
 
 
 class TestErrorHandling:

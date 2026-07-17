@@ -13,6 +13,7 @@ from app.database.repository import DrawRepository, GameRepository
 from app.models.domain import ParsedDraw
 from app.services.validation import (
     ISSUE_BROKEN_SEQUENCE,
+    ISSUE_DUPLICATE_DRAW,
     ISSUE_FUTURE_DATE,
     ISSUE_MISSING_DRAWS,
     ISSUE_OUT_OF_RANGE,
@@ -24,7 +25,14 @@ from app.services.validation import (
 TODAY = date(2026, 7, 17)
 
 
-def store(database: Database, game_code: str, number: int, draw_date: date, numbers: tuple[int, ...]) -> None:
+def store(
+    database: Database,
+    game_code: str,
+    number: int,
+    draw_date: date,
+    numbers: tuple[int, ...],
+    drawing: int = 1,
+) -> None:
     with database.session() as session:
         game = GameRepository(session).by_code(game_code)
         DrawRepository(session).add_parsed(
@@ -34,10 +42,11 @@ def store(database: Database, game_code: str, number: int, draw_date: date, numb
                 draw_number=number,
                 draw_year=draw_date.year,
                 draw_date=draw_date,
+                drawing=drawing,
                 numbers=numbers,
                 jackpot_amount=Decimal("1000.00"),
                 currency="EUR",
-                source_url=f"test://{game_code}/{draw_date.year}-{number}",
+                source_url=f"test://{game_code}/{draw_date.year}-{number}#{drawing}",
             ),
             source="live",
         )
@@ -94,6 +103,24 @@ def test_gap_detected_as_warning(database: Database) -> None:
     assert len(gaps) == 1
     assert gaps[0].severity == "warning"
     assert "54" in gaps[0].description
+
+
+def test_two_drawings_same_date_pass_clean(database: Database) -> None:
+    store(database, "5x35", 12, date(2016, 3, 3), (2, 13, 30, 31, 33), drawing=1)
+    store(database, "5x35", 12, date(2016, 3, 3), (2, 9, 24, 33, 34), drawing=2)
+    report = ValidationService(database).validate("5x35", today=TODAY)
+    game = report.games[0]
+    assert game.draws_checked == 2
+    assert game.error_count == 0
+    assert not issues_of(report, "5x35", ISSUE_DUPLICATE_DRAW)
+    assert not issues_of(report, "5x35", ISSUE_BROKEN_SEQUENCE)
+
+
+def test_two_drawings_with_different_dates_flagged(database: Database) -> None:
+    store(database, "5x35", 12, date(2016, 3, 3), (2, 13, 30, 31, 33), drawing=1)
+    store(database, "5x35", 12, date(2016, 3, 6), (2, 9, 24, 33, 34), drawing=2)
+    report = ValidationService(database).validate("5x35", today=TODAY)
+    assert issues_of(report, "5x35", ISSUE_BROKEN_SEQUENCE)
 
 
 def test_broken_sequence_detected(database: Database) -> None:

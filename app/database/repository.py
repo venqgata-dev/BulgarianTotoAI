@@ -25,6 +25,7 @@ def content_hash(parsed: ParsedDraw) -> str:
             parsed.game_code,
             str(parsed.draw_year),
             str(parsed.draw_number),
+            str(parsed.drawing),
             parsed.draw_date.isoformat(),
             ",".join(map(str, parsed.numbers)),
             ",".join(map(str, parsed.bonus_numbers)),
@@ -51,17 +52,20 @@ class DrawRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def get(self, game_id: int, draw_year: int, draw_number: int) -> Draw | None:
+    def get(
+        self, game_id: int, draw_year: int, draw_number: int, drawing: int = 1
+    ) -> Draw | None:
         return self._session.scalar(
             select(Draw).where(
                 Draw.game_id == game_id,
                 Draw.draw_year == draw_year,
                 Draw.draw_number == draw_number,
+                Draw.drawing == drawing,
             )
         )
 
-    def exists(self, game_id: int, draw_year: int, draw_number: int) -> bool:
-        return self.get(game_id, draw_year, draw_number) is not None
+    def exists(self, game_id: int, draw_year: int, draw_number: int, drawing: int = 1) -> bool:
+        return self.get(game_id, draw_year, draw_number, drawing) is not None
 
     def count(self, game_id: int | None = None) -> int:
         stmt = select(func.count(Draw.id))
@@ -87,6 +91,7 @@ class DrawRepository:
             game_id=game.id,
             draw_number=parsed.draw_number,
             draw_year=parsed.draw_year,
+            drawing=parsed.drawing,
             draw_date=parsed.draw_date,
             day_of_week=parsed.draw_date.isoweekday(),
             month=parsed.draw_date.month,

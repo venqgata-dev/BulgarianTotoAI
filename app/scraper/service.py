@@ -107,7 +107,8 @@ class ScraperService:
         # The list page itself shows the latest draw in full.
         try:
             latest = self._parser.parse_draw_page(html, game_code, source_url=list_url)
-            self._store_draw(game_code, latest, source="live", stats=stats)
+            for parsed in latest:
+                self._store_draw(game_code, parsed, source="live", stats=stats)
         except ParseError as exc:
             self._record_failure(stats, game_code, list_url, exc)
 
@@ -126,6 +127,9 @@ class ScraperService:
                 stats.skipped_checkpointed += 1
                 return
             ref = self._parser.draw_ref_from_url(url)
+            # A page's drawings are always stored together in one _store_draw
+            # pass below, so the first drawing existing is a reliable proxy
+            # for "this URL was already imported".
             if ref and DrawRepository(session).exists(game_id, *ref):
                 CheckpointRepository(session).mark(game_id, segment, "skipped", "already in database")
                 stats.skipped_existing += 1
@@ -141,7 +145,8 @@ class ScraperService:
             with self._db.session() as session:
                 CheckpointRepository(session).mark(game_id, segment, "failed", str(exc)[:500])
             return
-        self._store_draw(game_code, parsed, source=source, stats=stats, segment=segment)
+        for draw in parsed:
+            self._store_draw(game_code, draw, source=source, stats=stats, segment=segment)
 
     # -- wayback -----------------------------------------------------------------
 
@@ -178,7 +183,8 @@ class ScraperService:
                 with self._db.session() as session:
                     CheckpointRepository(session).mark(game_id, segment, "failed", str(exc)[:500])
                 continue
-            self._store_draw(game_code, parsed, source="wayback", stats=stats, segment=segment)
+            for draw in parsed:
+                self._store_draw(game_code, draw, source="wayback", stats=stats, segment=segment)
         return stats
 
     # -- shared helpers ----------------------------------------------------------
@@ -198,7 +204,7 @@ class ScraperService:
         with self._db.session() as session:
             game = GameRepository(session).by_code(game_code)
             draws = DrawRepository(session)
-            existing = draws.get(game.id, parsed.draw_year, parsed.draw_number)
+            existing = draws.get(game.id, parsed.draw_year, parsed.draw_number, parsed.drawing)
             if existing is not None:
                 if existing.content_hash != content_hash(parsed):
                     message = (

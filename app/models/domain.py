@@ -70,6 +70,7 @@ class ParsedDraw:
     draw_year: int
     draw_date: date
     numbers: tuple[int, ...]
+    drawing: int = 1  # historical draws had a second drawing ("II-ро теглене")
     bonus_numbers: tuple[int, ...] = ()
     jackpot_amount: Decimal | None = None
     currency: str | None = None
@@ -78,5 +79,6 @@ class ParsedDraw:
 
     @property
     def official_ref(self) -> str:
-        """Official draw reference, e.g. ``55/2026``."""
-        return f"{self.draw_number}/{self.draw_year}"
+        """Official draw reference, e.g. ``55/2026`` (``55/2026#2`` for a second drawing)."""
+        suffix = f"#{self.drawing}" if self.drawing != 1 else ""
+        return f"{self.draw_number}/{self.draw_year}{suffix}"

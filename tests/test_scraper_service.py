@@ -7,7 +7,7 @@ import pytest
 from app.database.engine import Database
 from app.database.repository import DrawRepository, GameRepository
 from app.scraper.fetch import FetchError
-from app.scraper.service import ScraperService
+from app.scraper.service import ImportStats, ScraperService
 
 
 class FakeFetcher:
@@ -79,6 +79,58 @@ def test_fetch_failures_are_recorded_not_fatal(database: Database, live_list_htm
     with database.session() as session:
         game = GameRepository(session).by_code("6x49")
         assert DrawRepository(session).count(game.id) == 1
+
+
+_TWO_DRAWING_HTML = """
+<div class="tir_result">
+  <h2 class="tir_title"> Тираж 12 - 03.03.2016 </h2>
+  <div class="tir_numbers">
+    <div class="col-xs-12"><span class="win-numbers">1 Теглене</span></div>
+    <div class="col-xs-12">
+      <span class="ball-white">2</span>
+      <span class="ball-white">13</span>
+      <span class="ball-white">30</span>
+      <span class="ball-white">31</span>
+      <span class="ball-white">33</span>
+    </div>
+    <div class="col-xs-12"><span class="win-numbers">2 Теглене</span></div>
+    <div class="col-xs-12">
+      <span class="ball-white">2</span>
+      <span class="ball-white">9</span>
+      <span class="ball-white">24</span>
+      <span class="ball-white">33</span>
+      <span class="ball-white">34</span>
+    </div>
+  </div>
+</div>
+"""
+
+
+def test_two_drawing_page_stores_both_drawings(database: Database) -> None:
+    url = "https://info.toto.bg/results/5x35/2016-12"
+    fetcher = FakeFetcher({url: _TWO_DRAWING_HTML})
+    service = make_service(database, fetcher)
+
+    stats = ImportStats()
+    service._import_draw_url("5x35", url, source="wayback", stats=stats)
+
+    with database.session() as session:
+        game = GameRepository(session).by_code("5x35")
+        draws = DrawRepository(session)
+        assert draws.count(game.id) == 2
+        first = draws.get(game.id, 2016, 12, drawing=1)
+        second = draws.get(game.id, 2016, 12, drawing=2)
+        assert first is not None and second is not None
+        assert [n.value for n in first.numbers] == [2, 13, 30, 31, 33]
+        assert [n.value for n in second.numbers] == [2, 9, 24, 33, 34]
+    assert stats.draws_imported == 2
+
+    # Re-running against the same URL must not duplicate either drawing.
+    stats2 = ImportStats()
+    service._import_draw_url("5x35", url, source="wayback", stats=stats2)
+    with database.session() as session:
+        game = GameRepository(session).by_code("5x35")
+        assert DrawRepository(session).count(game.id) == 2
 
 
 def test_failed_segments_retried_on_next_run(database: Database, live_list_html: str) -> None:

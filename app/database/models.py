@@ -12,6 +12,9 @@ Schema notes
 * Winning numbers live in the ``draw_numbers`` child table (one row per ball)
   so per-number statistics are plain SQL. ``is_bonus`` is reserved for games
   with bonus balls; none of the three supported games currently draws one.
+* Until the mid-2010s one draw session of 6/49 and 5/35 comprised **two
+  drawings** ("I-во теглене" / "II-ро теглене"). Each drawing is stored as its
+  own row distinguished by ``drawing`` (1 or 2); modern draws are always 1.
 """
 
 from __future__ import annotations
@@ -79,7 +82,9 @@ class Draw(Base):
 
     __tablename__ = "draws"
     __table_args__ = (
-        UniqueConstraint("game_id", "draw_year", "draw_number", name="uq_draw_game_year_number"),
+        UniqueConstraint(
+            "game_id", "draw_year", "draw_number", "drawing", name="uq_draw_game_year_number"
+        ),
         Index("ix_draws_game_date", "game_id", "draw_date"),
     )
 
@@ -87,6 +92,7 @@ class Draw(Base):
     game_id: Mapped[int] = mapped_column(ForeignKey("games.id"), index=True)
     draw_number: Mapped[int] = mapped_column(Integer)
     draw_year: Mapped[int] = mapped_column(Integer)
+    drawing: Mapped[int] = mapped_column(Integer, default=1)  # historical II-ро теглене = 2
     draw_date: Mapped[date] = mapped_column(Date, index=True)
 
     # Denormalised calendar fields (draw_date is authoritative).
@@ -100,7 +106,9 @@ class Draw(Base):
     currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
 
     source_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    source: Mapped[str] = mapped_column(String(16), default="live")  # live | wayback
+    # Provenance labels: live | wayback-info | wayback-classic | wayback-home-legacy
+    # | wayback-home-modern (see docs/RESEARCH.md)
+    source: Mapped[str] = mapped_column(String(32), default="live")
     content_hash: Mapped[str] = mapped_column(String(64))
     validation_status: Mapped[ValidationStatus] = mapped_column(
         Enum(ValidationStatus, values_callable=lambda e: [m.value for m in e]),

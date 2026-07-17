@@ -154,15 +154,16 @@ class ValidationService:
     ) -> dict[int, list[str]]:
         definition = game_by_code(game_code)
         severities: dict[int, list[str]] = {}
-        seen_refs: dict[tuple[int, int], int] = {}
+        seen_refs: dict[tuple[int, int, int], int] = {}
 
         def add(draw: Draw, issue_type: str, severity: str, description: str) -> None:
+            suffix = f"#{draw.drawing}" if draw.drawing != 1 else ""
             report.issues.append(
                 ReportedIssue(
                     issue_type=issue_type,
                     severity=severity,
                     description=description,
-                    draw_ref=f"{draw.draw_number}/{draw.draw_year}",
+                    draw_ref=f"{draw.draw_number}/{draw.draw_year}{suffix}",
                 )
             )
             severities.setdefault(draw.id, []).append(severity)
@@ -196,7 +197,7 @@ class ValidationService:
                     "warning",
                     f"numbering year {draw.draw_year} != calendar year {draw.draw_date.year}",
                 )
-            ref = (draw.draw_year, draw.draw_number)
+            ref = (draw.draw_year, draw.draw_number, draw.drawing)
             if ref in seen_refs:
                 add(draw, ISSUE_DUPLICATE_DRAW, "error", "same draw stored more than once")
             seen_refs[ref] = draw.id
@@ -225,9 +226,25 @@ class ValidationService:
 
     @staticmethod
     def _check_sequence(game_code: str, draws: list[Draw], report: GameValidationReport) -> None:
-        ordered = sorted(draws, key=lambda d: (d.draw_year, d.draw_number))
+        ordered = sorted(draws, key=lambda d: (d.draw_year, d.draw_number, d.drawing))
         for previous, current in zip(ordered, ordered[1:]):
-            if previous.draw_year == current.draw_year and previous.draw_date >= current.draw_date:
+            if previous.draw_year != current.draw_year:
+                continue
+            if previous.draw_number == current.draw_number:
+                # Two drawings of the same draw session must share the date.
+                if previous.draw_date != current.draw_date:
+                    report.issues.append(
+                        ReportedIssue(
+                            issue_type=ISSUE_BROKEN_SEQUENCE,
+                            severity="error",
+                            description=(
+                                f"drawings of draw {current.draw_number}/{current.draw_year} "
+                                f"have different dates: {previous.draw_date} vs {current.draw_date}"
+                            ),
+                            draw_ref=f"{current.draw_number}/{current.draw_year}",
+                        )
+                    )
+            elif previous.draw_date >= current.draw_date:
                 report.issues.append(
                     ReportedIssue(
                         issue_type=ISSUE_BROKEN_SEQUENCE,
@@ -245,8 +262,14 @@ class ValidationService:
     def _draw_id_for_ref(draws: list[Draw], draw_ref: str | None) -> int | None:
         if not draw_ref:
             return None
-        number_str, _, year_str = draw_ref.partition("/")
+        number_str, _, year_part = draw_ref.partition("/")
+        year_str, _, drawing_str = year_part.partition("#")
+        drawing = int(drawing_str) if drawing_str else 1
         for draw in draws:
-            if draw.draw_number == int(number_str) and draw.draw_year == int(year_str):
+            if (
+                draw.draw_number == int(number_str)
+                and draw.draw_year == int(year_str)
+                and draw.drawing == drawing
+            ):
                 return draw.id
         return None
