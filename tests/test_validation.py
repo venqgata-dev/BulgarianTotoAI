@@ -13,13 +13,19 @@ from app.database.repository import DrawRepository, GameRepository
 from app.models.domain import ParsedDraw
 from app.services.validation import (
     ISSUE_BROKEN_SEQUENCE,
+    ISSUE_DUPLICATE_CONTENT,
     ISSUE_DUPLICATE_DRAW,
     ISSUE_FUTURE_DATE,
+    ISSUE_IMPOSSIBLE_NUMBERING,
+    ISSUE_INVALID_DRAWING,
     ISSUE_MISSING_DRAWS,
+    ISSUE_MISSING_SECOND_DRAWING,
     ISSUE_OUT_OF_RANGE,
     ISSUE_REPEATED_NUMBER,
     ISSUE_WRONG_COUNT,
     ValidationService,
+    duplicate_number_groups,
+    missing_numbers_by_year,
 )
 
 TODAY = date(2026, 7, 17)
@@ -150,3 +156,79 @@ def test_report_text_renders(database: Database) -> None:
     text = ValidationService(database).validate(today=TODAY).to_text()
     assert "VALIDATION REPORT" in text
     assert "6x49" in text
+
+
+def test_impossible_numbering_detected(database: Database) -> None:
+    store(database, "6x49", 0, date(2026, 7, 16), (5, 10, 17, 20, 42, 47))
+    report = ValidationService(database).validate("6x49", today=TODAY)
+    assert issues_of(report, "6x49", ISSUE_IMPOSSIBLE_NUMBERING)
+
+
+def test_invalid_drawing_number_detected(database: Database) -> None:
+    store(database, "6x49", 55, date(2026, 7, 16), (5, 10, 17, 20, 42, 47), drawing=3)
+    report = ValidationService(database).validate("6x49", today=TODAY)
+    issues = issues_of(report, "6x49", ISSUE_INVALID_DRAWING)
+    assert issues
+    assert "55/2026#3" in issues[0].draw_ref
+
+
+def test_missing_second_drawing_detected_when_year_format_established(database: Database) -> None:
+    store(database, "5x35", 12, date(2016, 3, 3), (2, 13, 30, 31, 33), drawing=1)
+    store(database, "5x35", 12, date(2016, 3, 3), (2, 9, 24, 33, 34), drawing=2)
+    store(database, "5x35", 13, date(2016, 3, 6), (1, 2, 3, 4, 5), drawing=1)  # no drawing 2
+    report = ValidationService(database).validate("5x35", today=TODAY)
+    issues = issues_of(report, "5x35", ISSUE_MISSING_SECOND_DRAWING)
+    assert len(issues) == 1
+    assert issues[0].draw_ref == "13/2016"
+
+
+def test_missing_second_drawing_not_flagged_when_year_never_had_one(database: Database) -> None:
+    store(database, "6x49", 54, date(2026, 7, 12), (8, 14, 35, 39, 42, 49))
+    store(database, "6x49", 55, date(2026, 7, 16), (5, 10, 17, 20, 42, 47))
+    report = ValidationService(database).validate("6x49", today=TODAY)
+    assert not issues_of(report, "6x49", ISSUE_MISSING_SECOND_DRAWING)
+
+
+def test_duplicate_content_detected(database: Database) -> None:
+    store(database, "6x49", 1, date(2026, 1, 1), (1, 2, 3, 4, 5, 6))
+    store(database, "6x49", 2, date(2026, 1, 1), (1, 2, 3, 4, 5, 6))  # identical numbers+date
+    report = ValidationService(database).validate("6x49", today=TODAY)
+    issues = issues_of(report, "6x49", ISSUE_DUPLICATE_CONTENT)
+    assert len(issues) == 1
+    assert "1/2026#1" in issues[0].description and "2/2026#1" in issues[0].description
+
+
+def test_missing_numbers_by_year_helper() -> None:
+    from app.database.models import Draw
+
+    draws = [
+        Draw(draw_year=2026, draw_number=1),
+        Draw(draw_year=2026, draw_number=3),
+        Draw(draw_year=2025, draw_number=5),
+    ]
+    assert missing_numbers_by_year(draws) == {2026: [2]}
+
+
+def test_duplicate_number_groups_helper_allows_distinct_drawings(database: Database) -> None:
+    # A legitimate two-drawing session (different numbers per drawing, the
+    # normal case) must not be reported as a content duplicate.
+    store(database, "5x35", 12, date(2016, 3, 3), (2, 13, 30, 31, 33), drawing=1)
+    store(database, "5x35", 12, date(2016, 3, 3), (2, 9, 24, 33, 34), drawing=2)
+    with database.session() as session:
+        game = GameRepository(session).by_code("5x35")
+        draws = DrawRepository(session).all_for_game(game.id)
+        groups = duplicate_number_groups(draws)
+    assert groups == []
+
+
+def test_duplicate_number_groups_helper_flags_identical_drawings_too(database: Database) -> None:
+    # Two rows of the *same* session publishing identical numbers is just as
+    # suspicious as two different sessions doing so (e.g. a parsing bug that
+    # copied drawing 1's numbers into drawing 2's row) and must be flagged.
+    store(database, "5x35", 12, date(2016, 3, 3), (2, 13, 30, 31, 33), drawing=1)
+    store(database, "5x35", 12, date(2016, 3, 3), (2, 13, 30, 31, 33), drawing=2)
+    with database.session() as session:
+        game = GameRepository(session).by_code("5x35")
+        draws = DrawRepository(session).all_for_game(game.id)
+        groups = duplicate_number_groups(draws)
+    assert len(groups) == 1 and len(groups[0]) == 2

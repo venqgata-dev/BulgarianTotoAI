@@ -2,18 +2,27 @@
 
 Checks per game:
 
+* impossible numbering (draw number < 1)
+* invalid drawing numbers (outside the known 1-2 range)
 * wrong number-count per draw (vs. the game definition)
 * numbers outside the valid range
 * repeated numbers within one draw
 * invalid dates (in the future, or numbering year != calendar year)
-* duplicate draws (same game/year/number stored twice)
+* duplicate draws (same game/year/number/drawing stored twice)
+* duplicate content (identical numbers+date published under different refs)
 * missing draw numbers within each covered year (gaps)
-* broken sequences (draw date not increasing with draw number)
+* missing second drawing (a session has only drawing 1 in a year otherwise
+  established as two-drawing by its sibling sessions)
+* broken sequences (draw date not increasing with draw number; two drawings
+  of one session dated differently)
 
 Gap warnings are expected while the official source only exposes a rolling
 window (see docs/RESEARCH.md); they mark data we know is missing, not data
 corruption. Every run is persisted (``validation_runs``/``validation_issues``)
 and each draw's ``validation_status`` is updated.
+
+``missing_numbers_by_year`` and ``duplicate_number_groups`` are also used by
+the coverage engine (``app.services.coverage``).
 """
 
 from __future__ import annotations
@@ -35,6 +44,52 @@ ISSUE_YEAR_MISMATCH = "year_mismatch"
 ISSUE_DUPLICATE_DRAW = "duplicate_draw"
 ISSUE_MISSING_DRAWS = "missing_draws"
 ISSUE_BROKEN_SEQUENCE = "broken_date_sequence"
+ISSUE_IMPOSSIBLE_NUMBERING = "impossible_numbering"
+ISSUE_INVALID_DRAWING = "invalid_drawing_number"
+ISSUE_MISSING_SECOND_DRAWING = "missing_second_drawing"
+ISSUE_DUPLICATE_CONTENT = "duplicate_content"
+
+#: The only drawing numbers ever observed in official data (see
+#: app/database/models.py schema notes): a session is either a single
+#: modern drawing (1) or a historical two-drawing session (1 and 2).
+VALID_DRAWING_NUMBERS = (1, 2)
+
+
+def missing_numbers_by_year(draws: list[Draw]) -> dict[int, list[int]]:
+    """Draw numbers missing between the lowest and highest seen per year.
+
+    Shared by :class:`ValidationService` (gap warnings) and the coverage
+    engine (``app.services.coverage``), which both need this exact
+    per-year-observed-range computation.
+    """
+    by_year: dict[int, set[int]] = {}
+    for draw in draws:
+        by_year.setdefault(draw.draw_year, set()).add(draw.draw_number)
+    result: dict[int, list[int]] = {}
+    for year, numbers in by_year.items():
+        missing = sorted(set(range(min(numbers), max(numbers) + 1)) - numbers)
+        if missing:
+            result[year] = missing
+    return result
+
+
+def duplicate_number_groups(draws: list[Draw]) -> list[list[Draw]]:
+    """Group draws that share identical main numbers on the identical date.
+
+    Two distinct official draw refs (different draw_number and/or drawing)
+    publishing the exact same winning numbers on the exact same date is not
+    a plausible lottery coincidence - it signals a scraping/import bug
+    (e.g. the same page content saved under two different draw refs).
+    """
+    by_numbers: dict[tuple, list[Draw]] = {}
+    for draw in draws:
+        main = tuple(sorted(n.value for n in draw.numbers if not n.is_bonus))
+        by_numbers.setdefault((draw.draw_date, main), []).append(draw)
+    return [
+        group
+        for group in by_numbers.values()
+        if len({(d.draw_number, d.draw_year, d.drawing) for d in group}) > 1
+    ]
 
 
 @dataclass(slots=True)
@@ -111,6 +166,8 @@ class ValidationService:
                 per_draw_issues = self._check_draws(game.code, draws, today, game_report)
                 self._check_gaps(game.code, draws, game_report)
                 self._check_sequence(game.code, draws, game_report)
+                self._check_missing_second_drawing(draws, game_report)
+                self._check_duplicate_content(draws, game_report)
 
                 for draw in draws:
                     severities = per_draw_issues.get(draw.id, [])
@@ -171,6 +228,20 @@ class ValidationService:
         for draw in draws:
             main_values = [n.value for n in draw.numbers if not n.is_bonus]
 
+            if draw.draw_number < 1:
+                add(
+                    draw,
+                    ISSUE_IMPOSSIBLE_NUMBERING,
+                    "error",
+                    f"draw number {draw.draw_number} is not a positive integer",
+                )
+            if draw.drawing not in VALID_DRAWING_NUMBERS:
+                add(
+                    draw,
+                    ISSUE_INVALID_DRAWING,
+                    "error",
+                    f"drawing {draw.drawing} is outside the known range {VALID_DRAWING_NUMBERS}",
+                )
             if len(main_values) != definition.main_count:
                 add(
                     draw,
@@ -205,24 +276,60 @@ class ValidationService:
 
     @staticmethod
     def _check_gaps(game_code: str, draws: list[Draw], report: GameValidationReport) -> None:
-        by_year: dict[int, list[int]] = {}
-        for draw in draws:
-            by_year.setdefault(draw.draw_year, []).append(draw.draw_number)
-        for year, numbers in sorted(by_year.items()):
-            present = set(numbers)
-            missing = sorted(set(range(min(present), max(present) + 1)) - present)
-            if missing:
-                shown = ", ".join(map(str, missing[:20])) + (" ..." if len(missing) > 20 else "")
-                report.issues.append(
-                    ReportedIssue(
-                        issue_type=ISSUE_MISSING_DRAWS,
-                        severity="warning",
-                        description=(
-                            f"{game_code} {year}: {len(missing)} draw(s) missing between "
-                            f"{min(present)} and {max(present)}: {shown}"
-                        ),
-                    )
+        for year, missing in sorted(missing_numbers_by_year(draws).items()):
+            shown = ", ".join(map(str, missing[:20])) + (" ..." if len(missing) > 20 else "")
+            present = {d.draw_number for d in draws if d.draw_year == year}
+            report.issues.append(
+                ReportedIssue(
+                    issue_type=ISSUE_MISSING_DRAWS,
+                    severity="warning",
+                    description=(
+                        f"{game_code} {year}: {len(missing)} draw(s) missing between "
+                        f"{min(present)} and {max(present)}: {shown}"
+                    ),
                 )
+            )
+
+    @staticmethod
+    def _check_missing_second_drawing(draws: list[Draw], report: GameValidationReport) -> None:
+        """Flag sessions missing drawing 2 in a year where that year's format
+        is otherwise established (some session in the same year *does* have a
+        drawing 2) - i.e. only when determinable from the imported data
+        itself, not from an assumed historical cutoff date.
+        """
+        by_year: dict[int, dict[int, set[int]]] = {}
+        for draw in draws:
+            by_year.setdefault(draw.draw_year, {}).setdefault(draw.draw_number, set()).add(draw.drawing)
+        for year, sessions in sorted(by_year.items()):
+            if not any(2 in drawings for drawings in sessions.values()):
+                continue  # this year's format is not established as two-drawing
+            for number, drawings in sorted(sessions.items()):
+                if drawings == {1}:
+                    report.issues.append(
+                        ReportedIssue(
+                            issue_type=ISSUE_MISSING_SECOND_DRAWING,
+                            severity="warning",
+                            description=(
+                                f"draw {number}/{year}: other {year} sessions record a second "
+                                'drawing ("II-ро теглене") but this one only has drawing 1'
+                            ),
+                            draw_ref=f"{number}/{year}",
+                        )
+                    )
+
+    @staticmethod
+    def _check_duplicate_content(draws: list[Draw], report: GameValidationReport) -> None:
+        for group in duplicate_number_groups(draws):
+            refs = ", ".join(
+                sorted(f"{d.draw_number}/{d.draw_year}#{d.drawing}" for d in group)
+            )
+            report.issues.append(
+                ReportedIssue(
+                    issue_type=ISSUE_DUPLICATE_CONTENT,
+                    severity="error",
+                    description=f"identical numbers published on the same date under multiple draw refs: {refs}",
+                )
+            )
 
     @staticmethod
     def _check_sequence(game_code: str, draws: list[Draw], report: GameValidationReport) -> None:

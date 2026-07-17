@@ -11,5 +11,6 @@ logs/*.log
 data/*.db
 data/*.sqlite3
 config/user_config.json
+output/
 .idea/
 .vscode/

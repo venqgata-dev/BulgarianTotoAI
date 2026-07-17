@@ -6,6 +6,7 @@ Usage:
     python main.py scrape           Import draws (live window + Wayback backfill)
     python main.py scrape --source live|wayback|all [--game 6x49]
     python main.py validate [--game 6x49]
+    python main.py coverage [--game 6x49] [--json PATH] [--csv PATH]
     python main.py check            Headless self-check (used by CI/tests)
 """
 
@@ -101,6 +102,22 @@ def _run_validate(database: Database, game: str | None) -> int:
     return 0
 
 
+def _run_coverage(
+    database: Database, game: str | None, json_path: str | None, csv_path: str | None
+) -> int:
+    from app.services.coverage import CoverageService
+
+    report = CoverageService(database).analyze(game)
+    print(report.to_text())
+    if json_path:
+        report.write_json(Path(json_path))
+        print(f"Coverage JSON written to {json_path}")
+    if csv_path:
+        report.write_csv(Path(csv_path))
+        print(f"Coverage CSV written to {csv_path}")
+    return 0
+
+
 def _run_check(config: AppConfig, database: Database) -> int:
     """Headless health check: config, logging, schema and seeds all worked."""
     with database.session() as session:
@@ -121,6 +138,10 @@ def main(argv: list[str] | None = None) -> int:
     scrape.add_argument("--game", choices=GAME_CODES)
     validate = sub.add_parser("validate")
     validate.add_argument("--game", choices=GAME_CODES)
+    coverage = sub.add_parser("coverage")
+    coverage.add_argument("--game", choices=GAME_CODES)
+    coverage.add_argument("--json", dest="json_path", metavar="PATH")
+    coverage.add_argument("--csv", dest="csv_path", metavar="PATH")
     args = parser.parse_args(argv)
 
     config, database = bootstrap()
@@ -138,6 +159,8 @@ def main(argv: list[str] | None = None) -> int:
             return code
         if args.command == "validate":
             return _run_validate(database, args.game)
+        if args.command == "coverage":
+            return _run_coverage(database, args.game, args.json_path, args.csv_path)
         parser.error(f"unknown command {args.command!r}")
         return 2
     finally:
