@@ -22,6 +22,8 @@ from PySide6.QtWidgets import (
 from app import APP_NAME, __version__
 from app.database.engine import Database
 from app.database.repository import DrawRepository, GameRepository
+from app.ui.browser_widget import HistoricalBrowserWidget
+from app.ui.statistics_page import StatisticsPage
 
 
 def _page(title: str, hint: str) -> QWidget:
@@ -85,6 +87,10 @@ class MainWindow(QMainWindow):
     def _build_page(self, name: str, enabled: bool) -> QWidget:
         if name == "Dashboard":
             return self._build_dashboard()
+        if name == "Historical Draws":
+            return self._build_historical_draws()
+        if name == "Statistics":
+            return StatisticsPage(self._database)
         if name == "About":
             return _page(
                 APP_NAME,
@@ -95,6 +101,16 @@ class MainWindow(QMainWindow):
         if not enabled:
             return _page(name, "This area is planned for a future milestone.")
         return _page(name, "Content arrives in the next milestone; the pipeline behind it is ready.")
+
+    def _build_historical_draws(self) -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(28, 24, 28, 24)
+        title_label = QLabel("Historical Draws")
+        title_label.setObjectName("pageTitle")
+        layout.addWidget(title_label)
+        layout.addWidget(HistoricalBrowserWidget(self._database))
+        return widget
 
     def _build_dashboard(self) -> QWidget:
         lines: list[str] = []
