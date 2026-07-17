@@ -4,11 +4,18 @@ Windows desktop application for collecting, validating and (in future
 milestones) statistically analysing every available historical draw of the
 Bulgarian Toto games **6/49**, **6/42** and **5/35**.
 
-**Milestone 3 (current): coverage, provenance and data quality.** Database,
-scraper and validation pipeline are operational and cover the historical
-two-drawings-per-session era (milestone 2); a coverage/provenance engine now
-measures how complete and trustworthy the imported history is. The UI is a
-minimal navigation shell. No prediction or ML code exists yet — by design.
+**Milestone 5 (current): deterministic backtesting.** Database, scraper,
+validation and coverage/provenance reporting (milestones 1–3) are
+operational; a statistics engine and historical browser (milestone 4) give
+per-number/per-draw analytics and full draw lookup; a backtesting engine
+(this milestone) replays prediction strategies against historical draws to
+measure how they would actually have performed. The UI now has Historical
+Draws, Statistics and Backtesting pages alongside the Dashboard.
+
+*This software analyses historical data for research and education.
+Lottery draws are independent random events - no strategy in this project
+(or any other) can improve the odds of winning, and backtested performance
+on past draws is not predictive of future draws.*
 
 ## Quick start
 
@@ -21,6 +28,9 @@ python -m venv .venv
 .\.venv\Scripts\python main.py scrape    # import draws (Wayback + live site)
 .\.venv\Scripts\python main.py validate  # print a validation report
 .\.venv\Scripts\python main.py coverage  # print a coverage/provenance report
+.\.venv\Scripts\python main.py stats --game 6x49     # per-number/per-draw statistics
+.\.venv\Scripts\python main.py browse --game 6x49    # look up a draw from the CLI
+.\.venv\Scripts\python main.py backtest --game 6x49  # replay prediction strategies
 .\.venv\Scripts\python main.py           # launch the desktop shell
 ```
 
@@ -51,17 +61,18 @@ gap-free history going forward.
 
 ```
 BulgarianTotoAI/
-├── main.py                  # entry point: gui | init | scrape | validate | coverage | check
+├── main.py                  # entry point: gui | init | scrape | validate | coverage | stats | browse | backtest | check
 ├── alembic.ini              # migration config (schema versioning)
 ├── app/
-│   ├── analysis/            # reserved for statistics/ML (future milestones)
+│   ├── analysis/            # statistics engine, prediction strategies, backtesting engine
 │   ├── config/              # JSON config system (settings.py)
 │   ├── database/            # SQLAlchemy models, engine, repositories, seed
 │   │   └── migrations/      # Alembic environment + versions
 │   ├── models/              # framework-free domain objects (games, parsed draws)
 │   ├── scraper/             # fetchers (HTTP + Chrome CDP), parser, Wayback, orchestrator
-│   ├── services/            # logging setup, validation pipeline, coverage engine
-│   └── ui/                  # PySide6 shell (dark theme, navigation only)
+│   ├── services/            # logging, validation, coverage engine, historical browser
+│   └── ui/                  # PySide6 shell (dark theme): Dashboard, Historical Draws,
+│                             # Statistics, Backtesting pages
 ├── config/                  # user_config.json (created on first run)
 ├── data/                    # SQLite database (created on first run)
 ├── docs/RESEARCH.md         # official-site research findings
@@ -232,6 +243,139 @@ regressions (a newly-opened gap in an already-covered range) are easy to
 tell apart from historically-unavailable data (draws before this project's
 earliest recoverable source).
 
+## Backtesting
+
+`main.py backtest` deterministically replays prediction strategies against
+every historical draw: for each target draw, only draws *strictly before*
+it are used to generate a prediction, which is then compared to the actual
+result. It answers "how would this strategy actually have performed?" - it
+does not and cannot predict future draws (lottery draws are independent
+random events).
+
+### Architecture
+
+```
+app/analysis/strategies.py            app/analysis/backtest.py
+┌─────────────────────────┐           ┌───────────────────────────┐
+│ PredictionStrategy (ABC) │◄──────────┤ BacktestService           │
+│  .predict(History)       │  resolves │  .run()     -> one report │
+│      -> Prediction       │  only by  │  .compare() -> comparison │
+│                          │  name via │  computes hit counts,     │
+│ @register_strategy       │  the      │  metrics, streaks         │
+│  RandomStrategy          │  registry │                           │
+│  HotNumbersStrategy      │           │  KNOWS NOTHING about any  │
+│  ColdNumbersStrategy     │           │  concrete strategy class  │
+│  GapStrategy             │           └───────────────┬───────────┘
+│  BalancedStrategy        │                            │
+│  HybridStrategy          │                            ▼
+└─────────────────────────┘           app/database (DrawRepository) - the
+  new strategies: subclass +          only source of historical draws;
+  @register_strategy, nothing         backtest and strategies never write
+  else changes                        to the database
+```
+
+`History` (passed into every `predict()` call) contains only
+`HistoryEntry` rows dated strictly before the target draw, plus the
+target's own date/ref (never its numbers) so a `Prediction` can be
+timestamped. The engine resolves strategies purely by name through
+`STRATEGY_REGISTRY`/`create_strategy` - it never imports a concrete
+strategy class, so adding a new one never requires touching
+`backtest.py`.
+
+### Strategies
+
+| Name | Description | Configurable parameter |
+|---|---|---|
+| `random` | Uniformly random numbers from the valid range | `seed` (reproducible; a fresh `random.Random` is seeded once per strategy instance, so a full backtest run is byte-for-byte reproducible while still drawing a different sample per target draw) |
+| `hot` | The numbers that have appeared most often so far | `window` (limit to the last N history entries; default: whole history) |
+| `cold` | The numbers that have appeared least often so far | `window` |
+| `gap` | The most "overdue" numbers - the longest current absence streak | `window` |
+| `balanced` | Targets a configurable low/high split, filled by descending frequency within each half | `low_high_split` (default `0.5`) |
+| `hybrid` | Blends `hot` and `gap` picks using a configurable weight | `hot_weight` (default `0.5`; `1.0` reduces to pure `hot`, `0.0` to pure `gap`) |
+
+All ties (equal frequency/gap) break by ascending number value, so every
+deterministic strategy is 100% reproducible without a seed.
+
+### CLI examples
+
+```powershell
+.\.venv\Scripts\python main.py backtest --game 6x49 --strategy hot
+.\.venv\Scripts\python main.py backtest --game 6x49 --strategy hybrid --years 2025,2026
+.\.venv\Scripts\python main.py backtest --game 6x49 --strategy random --seed 42
+.\.venv\Scripts\python main.py backtest --game 6x49 --last-n 50           # last 50 draws, all strategies compared
+.\.venv\Scripts\python main.py backtest --game 6x49 --from-date 2025-01-01 --to-date 2025-12-31
+.\.venv\Scripts\python main.py backtest --game 6x49 --strategy hot --json output/backtest.json --csv output/backtest.csv
+```
+
+Omitting `--strategy` (or passing `--strategy all`) runs every registered
+strategy and prints a comparison table instead of one strategy's full
+report.
+
+### Output examples
+
+Single strategy (`--strategy hot`):
+
+```
+BACKTEST REPORT - Тото 2 - 6 от 49 - strategy: hot
+============================================================
+Scope: whole history
+Parameters: {'window': None}
+Execution time: 0.033s
+
+Predictions: 124
+Average hits: 0.718   Median: 1.0   Max: 3   Min: 0
+Average score: 11.96%
+Hit distribution: 0=52, 1=57, 2=13, 3=2, 4=0, 5=0, 6=0
+Hit %: 3+=1.6%  4+=0.0%  5+=0.0%  6=0.0%
+Longest winning streak: 1   Longest losing streak: 96
+```
+
+Comparison (`--strategy all`, or omitted):
+
+```
+STRATEGY COMPARISON - Тото 2 - 6 от 49
+============================================================
+Scope: last 30 draws
+
+Strategy    Preds  AvgHits  Max     3+     4+     5+      6  BestStk WorstStk  Time(s)
+--------------------------------------------------------------------------------------
+hot            30    0.833    3   6.7%   0.0%   0.0%   0.0%        1       19    0.014
+cold           30    0.833    2   0.0%   0.0%   0.0%   0.0%        0       30    0.012
+gap            30    0.700    2   0.0%   0.0%   0.0%   0.0%        0       30    0.012
+balanced       30    0.967    3   3.3%   0.0%   0.0%   0.0%        1       19    0.012
+hybrid         30    1.067    3   3.3%   0.0%   0.0%   0.0%        1       22    0.012
+random         30    0.667    2   0.0%   0.0%   0.0%   0.0%        0       30    0.010
+```
+
+None of the six strategies meaningfully beats the others over the full
+history - which is exactly what should happen against genuinely random
+draws, and is itself a useful (if unglamorous) result of the backtester.
+
+### Metrics
+
+* **Average / median / max / min hits** - the plain per-prediction match
+  count against the game's actual winning numbers.
+* **Hit distribution** - count of predictions with 0, 1, 2, ... up to
+  `main_count` matches.
+* **Hit percentages (3+, 4+, 5+, 6)** - share of predictions reaching at
+  least that many matches. `6` means a perfect match (all `main_count`
+  numbers correct - for 5/35 this is a 5-of-5 match, not literally six).
+* **Longest winning / losing streak** - longest run of consecutive
+  predictions with `hits >= 3` (the lowest real prize tier in all three
+  games) / `hits < 3`, in chronological order.
+* **Average score** - mean of `hits / main_count` across all predictions,
+  as a percentage; a normalised view distinct from the raw hit count.
+
+### Desktop UI
+
+The **Backtesting** nav page mirrors the CLI: game/strategy/years/last-N/
+date-range controls and a Run button, then four tabs - **Summary** (stat
+cards + hit-distribution chart), **Strategy Comparison** (table + bar chart,
+populated for every strategy run in the current comparison), **Performance
+Over Time** (hits-per-prediction and running-average line charts) and
+**History Table** (every prediction vs. actual result). CSV/JSON export
+buttons write the same formats as the CLI's `--csv`/`--json`.
+
 ## Configuration (`config/user_config.json`)
 
 | Key | Default | Meaning |
@@ -251,22 +395,25 @@ earliest recoverable source).
 .\.venv\Scripts\python -m pytest tests
 ```
 
-72 tests cover configuration, database schema/repositories, the parser
+166 tests cover configuration, database schema/repositories, the parser
 (against real captured pages, including a BGN-era Wayback snapshot, a
 synthetic two-drawing session and the Radware challenge page), the
-validation pipeline (including the historical-drawing and duplicate-content
-checks), the coverage engine and scraper orchestration (resume, duplicate
-detection, failure recovery) — no network access needed.
+validation pipeline, the coverage engine, scraper orchestration, the
+statistics engine and historical browser, and the prediction-strategy /
+backtesting engine (hand-verified hit counts and metrics, RandomStrategy
+determinism, scope filters, CSV/JSON export) — no network access needed.
 
 ## Roadmap
 
 1. **Milestone 1 (done):** research, database, scraper, validation, shell UI
 2. **Milestone 2 (done):** historical two-drawing sessions
 3. **Milestone 3 (done):** coverage & provenance reporting, expanded validation
-4. Historical browser + per-number statistics UI
-5. Statistical models and the Prediction Lab
-6. Backtesting engine
+4. **Milestone 4 (done):** statistics engine, historical browser, Statistics UI page
+5. **Milestone 5 (done):** prediction strategies + deterministic backtesting engine, Backtesting UI page
+6. Prediction Lab (live, forward-looking predictions built on the same strategies)
 7. Packaging (PyInstaller)
 
-*This software analyses historical data. Lottery draws are random; no
-prediction can improve the odds of winning.*
+*This software analyses historical data for research and education.
+Lottery draws are independent random events - no strategy can improve the
+odds of winning, and backtested performance on past draws is not
+predictive of future draws.*

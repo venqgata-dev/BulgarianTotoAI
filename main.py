@@ -10,6 +10,11 @@ Usage:
     python main.py stats --game 6x49 [--years 2024,2025] [--last-n 50] [--json PATH] [--csv PATH]
     python main.py browse --game 6x49 [--year Y --number N [--drawing 1|2]]
     python main.py browse --game 6x49 [--date YYYY-MM-DD] [--find-number N]
+    python main.py backtest --game 6x49 [--strategy hot|cold|gap|balanced|hybrid|random|all]
+    python main.py backtest --game 6x49 --strategy hybrid --years 2025,2026
+    python main.py backtest --game 6x49 --strategy random --seed 42
+    python main.py backtest --game 6x49 [--from-date Y-M-D] [--to-date Y-M-D] [--last-n N]
+    python main.py backtest --game 6x49 [--json PATH] [--csv PATH]
     python main.py check            Headless self-check (used by CI/tests)
 """
 
@@ -214,6 +219,70 @@ def _run_browse(
     return 0
 
 
+def _run_backtest(
+    database: Database,
+    game: str,
+    strategy: str,
+    years: str | None,
+    from_date: str | None,
+    to_date: str | None,
+    last_n: int | None,
+    seed: int | None,
+    json_path: str | None,
+    csv_path: str | None,
+) -> int:
+    from datetime import date as date_cls
+
+    from app.analysis.backtest import BacktestService
+    from app.analysis.strategies import STRATEGY_REGISTRY
+
+    year_list = [int(y) for y in years.split(",")] if years else None
+    date_from = date_cls.fromisoformat(from_date) if from_date else None
+    date_to = date_cls.fromisoformat(to_date) if to_date else None
+    service = BacktestService(database)
+
+    def params_for(name: str) -> dict:
+        return {"seed": seed} if name == "random" and seed is not None else {}
+
+    if strategy in (None, "all", "compare"):
+        names = sorted(STRATEGY_REGISTRY)
+        report = service.compare(
+            game,
+            names,
+            strategy_params={n: params_for(n) for n in names},
+            years=year_list,
+            date_from=date_from,
+            date_to=date_to,
+            last_n=last_n,
+        )
+        print(report.to_text())
+        if json_path:
+            report.write_json(Path(json_path))
+            print(f"Comparison JSON written to {json_path}")
+        if csv_path:
+            report.write_csv(Path(csv_path))
+            print(f"Comparison CSV written to {csv_path}")
+        return 0
+
+    report = service.run(
+        game,
+        strategy,
+        strategy_params=params_for(strategy),
+        years=year_list,
+        date_from=date_from,
+        date_to=date_to,
+        last_n=last_n,
+    )
+    print(report.to_text())
+    if json_path:
+        report.write_json(Path(json_path))
+        print(f"Backtest JSON written to {json_path}")
+    if csv_path:
+        report.write_csv(Path(csv_path))
+        print(f"Backtest CSV (history table) written to {csv_path}")
+    return 0
+
+
 def _run_check(config: AppConfig, database: Database) -> int:
     """Headless health check: config, logging, schema and seeds all worked."""
     with database.session() as session:
@@ -251,6 +320,16 @@ def main(argv: list[str] | None = None) -> int:
     browse.add_argument("--drawing", type=int, default=1)
     browse.add_argument("--date", metavar="YYYY-MM-DD")
     browse.add_argument("--find-number", dest="find_number", type=int, metavar="N")
+    backtest = sub.add_parser("backtest")
+    backtest.add_argument("--game", choices=GAME_CODES, required=True)
+    backtest.add_argument("--strategy", default="all")
+    backtest.add_argument("--years", metavar="Y1,Y2,...")
+    backtest.add_argument("--from-date", dest="from_date", metavar="YYYY-MM-DD")
+    backtest.add_argument("--to-date", dest="to_date", metavar="YYYY-MM-DD")
+    backtest.add_argument("--last-n", dest="last_n", type=int, metavar="N")
+    backtest.add_argument("--seed", type=int, metavar="N")
+    backtest.add_argument("--json", dest="json_path", metavar="PATH")
+    backtest.add_argument("--csv", dest="csv_path", metavar="PATH")
     args = parser.parse_args(argv)
 
     config, database = bootstrap()
@@ -275,6 +354,19 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "browse":
             return _run_browse(
                 database, args.game, args.year, args.number, args.drawing, args.date, args.find_number
+            )
+        if args.command == "backtest":
+            return _run_backtest(
+                database,
+                args.game,
+                args.strategy,
+                args.years,
+                args.from_date,
+                args.to_date,
+                args.last_n,
+                args.seed,
+                args.json_path,
+                args.csv_path,
             )
         parser.error(f"unknown command {args.command!r}")
         return 2

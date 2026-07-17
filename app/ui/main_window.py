@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 from app import APP_NAME, __version__
 from app.database.engine import Database
 from app.database.repository import DrawRepository, GameRepository
+from app.ui.backtesting_page import BacktestingPage
 from app.ui.browser_widget import HistoricalBrowserWidget
 from app.ui.statistics_page import StatisticsPage
 
@@ -49,7 +50,7 @@ class MainWindow(QMainWindow):
         ("Historical Draws", True),
         ("Statistics", True),
         ("Prediction Lab", False),  # future milestone
-        ("Backtesting", False),  # future milestone
+        ("Backtesting", True),
         ("Settings", True),
         ("About", True),
     )
@@ -91,6 +92,8 @@ class MainWindow(QMainWindow):
             return self._build_historical_draws()
         if name == "Statistics":
             return StatisticsPage(self._database)
+        if name == "Backtesting":
+            return BacktestingPage(self._database)
         if name == "About":
             return _page(
                 APP_NAME,
